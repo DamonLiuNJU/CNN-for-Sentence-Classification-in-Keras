@@ -1,4 +1,12 @@
 """
+
+Just Forcus on these kind of comments begin with three ". 
+
+The following description of the evaluations is based on MR database. 
+For the 5 classification task, we got 76-77% after 100 epoch on 'CNN-non-static'
+"""
+
+"""
 Train convolutional network for sentiment analysis. Based on
 "Convolutional Neural Networks for Sentence Classification" by Yoon Kim
 http://arxiv.org/pdf/1408.5882v2.pdf
@@ -45,8 +53,14 @@ from w2v import train_word2vec
 
 from keras.models import Sequential, Model
 from keras.layers import Activation, Dense, Dropout, Embedding, Flatten, Input, Merge, Convolution1D, MaxPooling1D
+from keras.utils import np_utils
 
 np.random.seed(2)
+
+# A monkey patch to fix a bug in Keras with a higher version of Tensorflow (maybe in the near future keras can fix it)
+import tensorflow as tf
+
+tf.python.control_flow_ops = tf
 
 # Parameters
 # ==================================================
@@ -54,16 +68,20 @@ np.random.seed(2)
 # Model Variations. See Kim Yoon's Convolutional Neural Networks for 
 # Sentence Classification, Section 3 for detail.
 
-model_variation = 'CNN-rand'  #  CNN-rand | CNN-non-static | CNN-static
+"""
+Model Setting and Parameters
+"""
+
+model_variation = 'CNN-non-static'  # CNN-rand | CNN-non-static | CNN-static
 print('Model variation is %s' % model_variation)
 
 # Model Hyperparameters
-sequence_length = 56
-embedding_dim = 20          
+embedding_dim = 20
 filter_sizes = (3, 4)
-num_filters = 150
-dropout_prob = (0.25, 0.5)
-hidden_dims = 150
+num_filters = 3
+dropout_prob = (0.7, 0.8)
+hidden_dims = 100
+sequence_length = 81
 
 # Training parameters
 batch_size = 32
@@ -72,28 +90,51 @@ val_split = 0.1
 
 # Word2Vec parameters, see train_word2vec
 min_word_count = 1  # Minimum word count                        
-context = 10        # Context window size    
+context = 10  # Context window size
 
 # Data Preparatopn
 # ==================================================
 #
 # Load data
-print("Loading data...")
-x, y, vocabulary, vocabulary_inv = data_helpers.load_data()
 
-if model_variation=='CNN-non-static' or model_variation=='CNN-static':
+"""
+Load data. 
+For the usage of load_data_chinese, please refer to the data_helper.py.
+For the usage of w2c word training and interfering, refer to w2c.py
+"""
+
+print("Loading data...")
+x, y, vocabulary, vocabulary_inv = data_helpers.load_data_chinese()
+
+"""
+x -> two dimensions. [sentence][word]
+y -> one dimension. [sentence]
+"""
+
+if model_variation == 'CNN-non-static' or model_variation == 'CNN-static':
     embedding_weights = train_word2vec(x, vocabulary_inv, embedding_dim, min_word_count, context)
-    if model_variation=='CNN-static':
+    if model_variation == 'CNN-static':
         x = embedding_weights[0][x]
-elif model_variation=='CNN-rand':
+elif model_variation == 'CNN-rand':
     embedding_weights = None
 else:
-    raise ValueError('Unknown model variation')    
+    raise ValueError('Unknown model variation')
 
 # Shuffle data
+"""
+reorganize the order of sentences in random.
+"""
 shuffle_indices = np.random.permutation(np.arange(len(y)))
 x_shuffled = x[shuffle_indices]
-y_shuffled = y[shuffle_indices].argmax(axis=1)
+y_shuffled = y[shuffle_indices]
+
+# Convert class vectors to binary class matrices
+"""
+from [0,5} -> [0-1], [0-1] ... (print the y_shuffled to ensure that)
+You can find why use this kind of conversion in future
+"""
+nb_classes = 5
+y_shuffled = np_utils.to_categorical(y_shuffled, nb_classes)
 
 print("Vocabulary Size: {:d}".format(len(vocabulary)))
 
@@ -102,9 +143,19 @@ print("Vocabulary Size: {:d}".format(len(vocabulary)))
 #
 # graph subnet with one input and one output,
 # convolutional layers concateneted in parallel
+
+"""
+CNN is built here.
+you can omit the code from "graph_in" to the "main sequential model"
+"""
+
+"""
+graph_in is actually the stacks of convolution layers and pooling layers 
+"""
 graph_in = Input(shape=(sequence_length, embedding_dim))
 convs = []
 for fsz in filter_sizes:
+    # highly recommand to put Batch Normalization here
     conv = Convolution1D(nb_filter=num_filters,
                          filter_length=fsz,
                          border_mode='valid',
@@ -113,8 +164,8 @@ for fsz in filter_sizes:
     pool = MaxPooling1D(pool_length=2)(conv)
     flatten = Flatten()(pool)
     convs.append(flatten)
-    
-if len(filter_sizes)>1:
+
+if len(filter_sizes) > 1:
     out = Merge(mode='concat')(convs)
 else:
     out = convs[0]
@@ -122,8 +173,19 @@ else:
 graph = Model(input=graph_in, output=out)
 
 # main sequential model
+
+"""
+The main structure of this CNN is:
+input
+embedding layer (to get the vector of the word maybe)
+dropout
+graph implemented before
+make the feture vector short (in Dense, Dropout, Dence...)
+softmax for classification
+"""
+
 model = Sequential()
-if not model_variation=='CNN-static':
+if not model_variation == 'CNN-static':
     model.add(Embedding(len(vocabulary), embedding_dim, input_length=sequence_length,
                         weights=embedding_weights))
 model.add(Dropout(dropout_prob[0], input_shape=(sequence_length, embedding_dim)))
@@ -131,11 +193,32 @@ model.add(graph)
 model.add(Dense(hidden_dims))
 model.add(Dropout(dropout_prob[1]))
 model.add(Activation('relu'))
-model.add(Dense(1))
-model.add(Activation('sigmoid'))
-model.compile(loss='binary_crossentropy', optimizer='rmsprop', metrics=['accuracy'])
+model.add(Dense(nb_classes))
+model.add(Activation('softmax'))
+
+"""
+compile the model
+"""
+model.compile(loss='categorical_crossentropy', optimizer='rmsprop', metrics=['accuracy'])
 
 # Training model
 # ==================================================
+"""
+train the model, validation_split shows the division of dataset, one val_split of dataset is used for validation while the rest is used for training
+"""
 model.fit(x_shuffled, y_shuffled, batch_size=batch_size,
-          nb_epoch=num_epochs, validation_split=val_split, verbose=2)
+          nb_epoch=num_epochs, validation_split=val_split, verbose=1)
+
+"""
+Save the net configuration and the trained model for future fine-tuning
+"""
+model.save('simple_net.h5')
+
+"""
+you can predict the sentence in that way.
+"""
+# x = load_data_chinese() #(change the input file, implement a flexible one in future)
+
+
+
+
